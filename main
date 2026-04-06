@@ -1,0 +1,368 @@
+import tkinter as tk
+from tkinter import messagebox, ttk
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.optimize import fsolve
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+import random
+import math
+
+
+class BranchingProcessGUI:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Ветвящийся процесс Гальтона–Ватсона")
+        self.root.geometry("1000x800")
+
+        # Переменные для хранения текущих вероятностей
+        self.probs = [0.0] * 6
+        self.entries = []
+
+        # Левая панель управления
+        control_frame = tk.Frame(root)
+        control_frame.pack(side=tk.LEFT, fill=tk.Y, padx=10, pady=10)
+
+        # Поля ввода вероятностей
+        prob_frame = tk.LabelFrame(control_frame, text="Вероятности P(k)")
+        prob_frame.pack(fill=tk.X, pady=5)
+        for i in range(6):
+            row = tk.Frame(prob_frame)
+            row.pack(fill=tk.X, pady=2)
+            lbl = tk.Label(row, text=f"P{i} =", width=5)
+            lbl.pack(side=tk.LEFT)
+            ent = tk.Entry(row, width=10)
+            ent.insert(0, "0.0")
+            ent.pack(side=tk.LEFT)
+            self.entries.append(ent)
+
+        # Кнопка нормировки
+        tk.Button(control_frame, text="Нормировать", command=self.normalize).pack(pady=2)
+
+        # Предопределённые распределения
+        dist_frame = tk.LabelFrame(control_frame, text="Готовые распределения")
+        dist_frame.pack(fill=tk.X, pady=5)
+        tk.Button(dist_frame, text="Пуассона (λ=1)", command=lambda: self.set_poisson(1)).pack(fill=tk.X)
+        tk.Button(dist_frame, text="Пуассона (λ=2)", command=lambda: self.set_poisson(2)).pack(fill=tk.X)
+        tk.Button(dist_frame, text="Геометрическое (p=0.5)", command=lambda: self.set_geometric(0.5)).pack(fill=tk.X)
+        tk.Button(dist_frame, text="Детерминированное (2 потомка)", command=lambda: self.set_deterministic(2)).pack(
+            fill=tk.X)
+
+        # Параметры симуляции
+        sim_frame = tk.LabelFrame(control_frame, text="Симуляция")
+        sim_frame.pack(fill=tk.X, pady=5)
+        tk.Label(sim_frame, text="Число траекторий:").pack(anchor=tk.W)
+        self.sim_trials = tk.Entry(sim_frame, width=10)
+        self.sim_trials.insert(0, "1000")
+        self.sim_trials.pack(fill=tk.X)
+        tk.Label(sim_frame, text="Макс. поколений:").pack(anchor=tk.W)
+        self.max_gen = tk.Entry(sim_frame, width=10)
+        self.max_gen.insert(0, "20")
+        self.max_gen.pack(fill=tk.X)
+        tk.Label(sim_frame, text="Лимит особей:").pack(anchor=tk.W)
+        self.max_pop = tk.Entry(sim_frame, width=10)
+        self.max_pop.insert(0, "1000")
+        self.max_pop.pack(fill=tk.X)
+
+        # Кнопки действий
+        btn_frame = tk.Frame(control_frame)
+        btn_frame.pack(fill=tk.X, pady=5)
+        tk.Button(btn_frame, text="Построить график", command=self.plot).pack(fill=tk.X)
+        tk.Button(btn_frame, text="Анимация итераций", command=self.animate).pack(fill=tk.X)
+        tk.Button(btn_frame, text="Симуляция (1 траектория)", command=self.simulate_one).pack(fill=tk.X)
+        tk.Button(btn_frame, text="Множественная симуляция", command=self.simulate_many).pack(fill=tk.X)
+        tk.Button(btn_frame, text="Моменты", command=self.show_moments).pack(fill=tk.X)
+
+        # Текстовое поле для вывода
+        self.text = tk.Text(control_frame, height=15, width=40)
+        self.text.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        # Правая панель с графиками
+        plot_frame = tk.Frame(root)
+        plot_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=10, pady=10)
+        self.fig, self.ax = plt.subplots(figsize=(6, 5))
+        self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+        # Дополнительное окно для гистограмм (будет открываться по необходимости)
+        self.hist_fig = None
+
+    def get_probs(self):
+        """Считывает вероятности из полей ввода, проверяет корректность."""
+        try:
+            probs = [float(ent.get()) for ent in self.entries]
+            if any(p < 0 for p in probs):
+                raise ValueError("Вероятности не могут быть отрицательными")
+            return probs
+        except:
+            messagebox.showerror("Ошибка", "Введите корректные числа")
+            return None
+
+    def normalize(self):
+        """Нормирует вероятности так, чтобы сумма стала равной 1."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        total = sum(probs)
+        if total == 0:
+            messagebox.showerror("Ошибка", "Сумма вероятностей не может быть нулевой")
+            return
+        norm = [p / total for p in probs]
+        for ent, val in zip(self.entries, norm):
+            ent.delete(0, tk.END)
+            ent.insert(0, f"{val:.4f}")
+        self.text.insert(tk.END, "Вероятности нормированы.\n")
+        self.text.see(tk.END)
+
+    def set_poisson(self, lam):
+        """Заполняет вероятности распределением Пуассона с обрезанием до 5."""
+        probs = [math.exp(-lam) * (lam ** k / math.factorial(k)) for k in range(6)]
+        # Оставшуюся вероятность добавляем к P5 (хвост)
+        total = sum(probs)
+        if total < 1:
+            probs[5] += 1 - total
+        for ent, val in zip(self.entries, probs):
+            ent.delete(0, tk.END)
+            ent.insert(0, f"{val:.6f}")
+        self.normalize()
+        self.text.insert(tk.END, f"Установлено распределение Пуассона с λ={lam}\n")
+
+    def set_geometric(self, p):
+        """Геометрическое распределение (сдвинутое: число неудач до первого успеха) P(k) = (1-p)^k * p."""
+        probs = [p * (1 - p) ** k for k in range(6)]
+        total = sum(probs)
+        if total < 1:
+            probs[5] += 1 - total
+        for ent, val in zip(self.entries, probs):
+            ent.delete(0, tk.END)
+            ent.insert(0, f"{val:.6f}")
+        self.normalize()
+        self.text.insert(tk.END, f"Установлено геометрическое распределение с p={p}\n")
+
+    def set_deterministic(self, k):
+        """Всегда ровно k потомков, если k<=5, иначе последняя ячейка."""
+        probs = [0.0] * 6
+        if k <= 5:
+            probs[k] = 1.0
+        else:
+            probs[5] = 1.0  # ограничиваем 5
+        for ent, val in zip(self.entries, probs):
+            ent.delete(0, tk.END)
+            ent.insert(0, f"{val:.6f}")
+        self.normalize()
+        self.text.insert(tk.END, f"Установлено детерминированное распределение: всегда {k} потомков\n")
+
+    def _get_S(self, probs):
+        """Возвращает функцию производящей функции для данных вероятностей."""
+
+        def S(x):
+            return sum(p * x ** k for k, p in enumerate(probs))
+
+        return S
+
+    def plot(self):
+        """Основной график: S(x), диагональ, неподвижные точки, лестница Ламерея."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        S = self._get_S(probs)
+        self.ax.clear()
+        x = np.linspace(0, 1, 400)
+        y = S(x)
+        self.ax.plot(x, y, 'b-', linewidth=2, label='S(x)')
+        self.ax.plot(x, x, 'k--', linewidth=1, label='y=x')
+
+        # Лестница Ламерея (фиксированная начальная точка 0.2, 15 итераций)
+        x0 = 0.2
+        xs = [x0];
+        ys = [0]
+        for _ in range(15):
+            y_next = S(xs[-1])
+            xs.append(xs[-1]);
+            ys.append(y_next)
+            xs.append(y_next);
+            ys.append(y_next)
+        self.ax.plot(xs, ys, 'r-', alpha=0.7, label='итерации')
+        self.ax.plot(xs[::2], ys[::2], 'ro', markersize=3)
+
+        # Неподвижные точки
+        roots = self._find_fixed_points(S)
+        for r in roots:
+            self.ax.plot(r, r, 'go', markersize=8, label=f'неподв. точка {r:.3f}')
+
+        mu = sum(k * p for k, p in enumerate(probs))
+        if mu < 1:
+            p_type = "Докритический (μ<1)"
+        elif mu == 1:
+            p_type = "Критический (μ=1)"
+        else:
+            p_type = "Надкритический (μ>1)"
+        self.ax.set_title(f"{p_type}, μ = {mu:.3f}")
+        self.ax.set_xlim(0, 1);
+        self.ax.set_ylim(0, 1)
+        self.ax.grid(True, alpha=0.3)
+        self.ax.legend(loc='best')
+        self.canvas.draw()
+
+        # Вывод информации
+        if roots:
+            ext_prob = roots[0]
+            self.text.insert(tk.END, f"Вероятность вырождения: {ext_prob:.4f}\n")
+        else:
+            self.text.insert(tk.END, "Не удалось найти неподвижные точки.\n")
+        self.text.insert(tk.END, f"Среднее число потомков: {mu:.4f}\n")
+        self.text.see(tk.END)
+
+    def _find_fixed_points(self, S):
+        """Находит все неподвижные точки S(x)=x на [0,1] численно."""
+
+        def eq(x):
+            return S(x) - x
+
+        roots = []
+        for guess in [0, 0.5, 1]:
+            try:
+                root = fsolve(eq, guess, xtol=1e-8)[0]
+                if 0 <= root <= 1 and not any(abs(root - r) < 1e-6 for r in roots):
+                    roots.append(root)
+            except:
+                pass
+        roots.sort()
+        return roots
+
+    def animate(self):
+        """Анимация лестницы Ламерея с возможностью задать число шагов."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        S = self._get_S(probs)
+        # Создаём отдельное окно для анимации
+        anim_win = tk.Toplevel(self.root)
+        anim_win.title("Анимация итераций")
+        fig, ax = plt.subplots(figsize=(5, 5))
+        canvas = FigureCanvasTkAgg(fig, master=anim_win)
+        canvas.get_tk_widget().pack()
+
+        # Параметры
+        x0 = 0.2
+        steps = 20
+        xs = [x0]
+        ys = [0]
+        # Предварительный расчёт всех точек
+        for _ in range(steps):
+            y_next = S(xs[-1])
+            xs.append(xs[-1]);
+            ys.append(y_next)
+            xs.append(y_next);
+            ys.append(y_next)
+
+        # Функция обновления кадра
+        def update_frame(i):
+            ax.clear()
+            x_vals = np.linspace(0, 1, 400)
+            ax.plot(x_vals, S(x_vals), 'b-', label='S(x)')
+            ax.plot(x_vals, x_vals, 'k--', label='y=x')
+            # Отображаем первые i+1 итераций (каждый шаг - 2 точки)
+            max_pts = 2 * (i + 1) + 1  # +1 для начальной точки
+            ax.plot(xs[:max_pts], ys[:max_pts], 'r-', alpha=0.7)
+            ax.plot(xs[:max_pts:2], ys[:max_pts:2], 'ro', markersize=3)
+            ax.set_xlim(0, 1);
+            ax.set_ylim(0, 1)
+            ax.grid(True)
+            ax.legend()
+            canvas.draw()
+
+        # Слайдер для выбора шага
+        slider = tk.Scale(anim_win, from_=0, to=steps, orient=tk.HORIZONTAL,
+                          label="Шаг итерации", command=lambda val: update_frame(int(val)))
+        slider.pack(fill=tk.X)
+        slider.set(0)
+        update_frame(0)
+
+    def simulate_one(self):
+        """Одна траектория процесса."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        max_gen = int(self.max_gen.get())
+        max_pop = int(self.max_pop.get())
+        pop = self._simulate_trajectory(probs, max_gen, max_pop)
+        self.text.insert(tk.END, f"Траектория (одна): {pop}\n")
+        self.text.see(tk.END)
+
+    def _simulate_trajectory(self, probs, max_gen, max_pop):
+        """Вспомогательная функция: симулирует одну траекторию."""
+        pop = [1]  # начальная 1 особь
+        for gen in range(max_gen):
+            if pop[-1] == 0 or pop[-1] > max_pop:
+                break
+            next_pop = 0
+            for _ in range(pop[-1]):
+                r = random.random()
+                cum = 0
+                for k, p in enumerate(probs):
+                    cum += p
+                    if r < cum:
+                        next_pop += k
+                        break
+            pop.append(next_pop)
+        return pop
+
+    def simulate_many(self):
+        """Множественная симуляция: оцениваем вероятность вырождения, строим гистограмму."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        trials = int(self.sim_trials.get())
+        max_gen = int(self.max_gen.get())
+        max_pop = int(self.max_pop.get())
+
+        extinction_count = 0
+        final_sizes = []
+        for _ in range(trials):
+            pop = self._simulate_trajectory(probs, max_gen, max_pop)
+            if pop[-1] == 0:
+                extinction_count += 1
+            else:
+                final_sizes.append(pop[-1])
+
+        ext_prob_est = extinction_count / trials
+        self.text.insert(tk.END, f"Из {trials} траекторий вымерло {extinction_count}.\n")
+        self.text.insert(tk.END, f"Оценка вероятности вырождения: {ext_prob_est:.4f}\n")
+
+        # Гистограмма финальных размеров (для невымерших)
+        if final_sizes:
+            if self.hist_fig is not None:
+                plt.close(self.hist_fig)
+            self.hist_fig, ax_hist = plt.subplots(figsize=(5, 4))
+            ax_hist.hist(final_sizes, bins=min(30, len(set(final_sizes))), edgecolor='black')
+            ax_hist.set_title("Распределение размера популяции в последнем поколении (невымершие)")
+            ax_hist.set_xlabel("Размер")
+            ax_hist.set_ylabel("Частота")
+            plt.show()
+        else:
+            self.text.insert(tk.END, "Все траектории вымерли, гистограмма не построена.\n")
+        self.text.see(tk.END)
+
+    def show_moments(self):
+        """Вычисляет и выводит теоретические моменты."""
+        probs = self.get_probs()
+        if probs is None:
+            return
+        mu = sum(k * p for k, p in enumerate(probs))
+        # Дисперсия
+        second_moment = sum(k * k * p for k, p in enumerate(probs))
+        var = second_moment - mu * mu
+        # Асимптотика в критическом случае
+        self.text.insert(tk.END, f"--- Моменты ---\n")
+        self.text.insert(tk.END, f"Среднее μ = {mu:.4f}\n")
+        self.text.insert(tk.END, f"Дисперсия σ² = {var:.4f}\n")
+        if mu == 1 and var > 0:
+            self.text.insert(tk.END, "Критический процесс. Асимптотика вероятности невырождения:\n")
+            self.text.insert(tk.END, f"  P(X_n > 0) ~ 2/(σ² n) = {2 / (var * 100):.6f} при n=100\n")
+        self.text.see(tk.END)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = BranchingProcessGUI(root)
+    root.mainloop()
